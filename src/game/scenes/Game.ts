@@ -14,6 +14,15 @@ const ARM_U     = 25;
 const ARM_L     = 22;
 const LEG_U     = 24;
 const LEG_L     = 21;
+const HEAD_LEN  = 16;   // neck to head-centre distance
+const HEAD_K    = 150;  // spring stiffness (rad/s²) — must exceed GRAVITY/HEAD_LEN ≈ 56
+const HEAD_DAMP = 0.97; // angular damping per step
+
+// ── Sky Lounge platform ───────────────────────────────────────────────────────
+const PLAT_Y    = 200;  // platform top surface Y (~2 monkey-heights from ceiling)
+const PLAT_X1   = 30;   // left fifth of the 1024-wide wall
+const PLAT_X2   = 235;
+const PLAT_H    = 22;
 
 type GameState = 'hanging' | 'flying';
 type GrabLimb  = 'leftHand' | 'rightHand';
@@ -57,6 +66,13 @@ export class Game extends Scene
     private legL: LegState = [0, 0, 0, 0];
     private legR: LegState = [0, 0, 0, 0];
 
+    // spring-pendulum head (angle from vertical-up, 0 = centred)
+    private headAngle: number = 0;
+    private headVel:   number = 0;
+
+    private gripDamp:  number  = 0.992;
+    private startTime: number  = 0;
+
     private spaceKey!: Phaser.Input.Keyboard.Key;
     private wasSpace:  boolean = false;
 
@@ -83,6 +99,10 @@ export class Game extends Scene
         this.legL      = [0, 0, 0, 0];
         this.legR      = [0, 0, 0, 0];
         this.bestPct   = 0;
+        this.gripDamp  = DAMPING;
+        this.headAngle = 0;
+        this.headVel   = 0;
+        this.startTime = Date.now();
 
         this.generatePegs();
 
@@ -92,16 +112,23 @@ export class Game extends Scene
         this.gfx = this.add.graphics();
         this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
 
-        this.hudLeft = this.add.text(12, 12, '[HOLD SPACE to spin, RELEASE to jump]', {
-            fontFamily: 'Arial', fontSize: 15, color: '#ffffff',
-            stroke: '#000000', strokeThickness: 3
-        }).setScrollFactor(0).setDepth(10);
+        this.hudLeft = this.add.text(WORLD_W / 2, 768 - 14, 'HOLD SPACE to spin arm  •  RELEASE to jump', {
+            fontFamily: 'Arial', fontSize: 16, color: '#ffffff',
+            stroke: '#000000', strokeThickness: 4
+        }).setScrollFactor(0).setDepth(10).setOrigin(0.5, 1);
 
         this.hudText = this.add.text(WORLD_W - 12, 12, '', {
             fontFamily: 'Arial Black', fontSize: 22, color: '#ffff00',
             stroke: '#000000', strokeThickness: 5,
             align: 'right'
         }).setScrollFactor(0).setDepth(10).setOrigin(1, 0);
+
+        // Sky Lounge sign (world-space, scrolls with camera)
+        this.add.text((PLAT_X1 + PLAT_X2) / 2, PLAT_Y - 76, 'SKY\nLOUNGE', {
+            fontFamily: 'Arial Black', fontSize: 20, color: '#ffffff',
+            stroke: '#000000', strokeThickness: 5,
+            align: 'center', lineSpacing: -4,
+        }).setOrigin(0.5, 1).setDepth(5);
 
         const startPegs = this.pegs.filter(p => p.y >= WORLD_H - 300 && p.y <= WORLD_H - 200);
         this.grabPeg = startPegs.length > 0
@@ -140,7 +167,8 @@ export class Game extends Scene
         const θ = this.pendAngle, ω = this.pendVel, L = this.pendLen;
         const pendAcc = -(GRAVITY / L) * Math.sin(θ);
         this.pendVel += pendAcc * dt;
-        this.pendVel *= DAMPING;
+        this.pendVel *= this.gripDamp;
+        this.gripDamp += (DAMPING - this.gripDamp) * 0.05;   // ease back to normal
         this.pendAngle += this.pendVel * dt;
         this.updateBody();
 
@@ -149,6 +177,7 @@ export class Game extends Scene
         const bodyAy = L * (-pendAcc * Math.sin(θ) - ω * ω * Math.cos(θ));
         this.stepLeg(this.legL, dt, bodyAx, bodyAy);
         this.stepLeg(this.legR, dt, bodyAx, bodyAy);
+        this.stepHead(dt, bodyAx, bodyAy);
 
         if (space) {
             // right arm free (CCW) when left grabs; left arm free (CW) when right grabs
@@ -171,13 +200,30 @@ export class Game extends Scene
         if (this.bx > WORLD_W - 20)  { this.bx = WORLD_W - 20; this.vx = -Math.abs(this.vx) * 0.4; }
         if (this.by > WORLD_H + 200) { this.scene.start('GameOver', { score: this.bestPct }); return; }
 
+        // Platform collision
+        const feetY = this.by + BODY_H / 2;
+        if (this.bx >= PLAT_X1 && this.bx <= PLAT_X2) {
+            if (this.vy > 0 && feetY >= PLAT_Y && feetY <= PLAT_Y + PLAT_H + 20) {
+                // Landing from above → Sky Lounge!
+                const elapsed = Math.round((Date.now() - this.startTime) / 100) / 10;
+                this.scene.start('GameOver', { type: 'skylounge', time: elapsed });
+                return;
+            }
+            if (this.vy < 0 && feetY > PLAT_Y && this.by < PLAT_Y + PLAT_H + BODY_H / 2 + 5) {
+                // Hit underside going up — bounce back down
+                this.by = PLAT_Y + PLAT_H + BODY_H / 2 + 1;
+                this.vy = Math.abs(this.vy) * 0.2;
+            }
+        }
+
         // both arms spin wildly to catch a peg
         this.spinAngle += SPIN_SPD * dt;   // right arm clockwise
         this.leftAngle -= SPIN_SPD * dt;   // left arm counter-clockwise
 
-        // body in free fall → effective gravity in body frame = 0 → legs gently drift
+        // body in free fall → effective gravity in body frame = 0 → limbs gently drift
         this.stepLeg(this.legL, dt, 0, GRAVITY);
         this.stepLeg(this.legR, dt, 0, GRAVITY);
+        this.stepHead(dt, 0, GRAVITY);
 
         this.checkGrab();
     }
@@ -204,6 +250,25 @@ export class Game extends Scene
         const αl = -(( GRAVITY - kAy) * Math.sin(φl) - (-kAx) * Math.cos(φl)) / LEG_L;
         leg[3]   = (ωl + αl * dt) * LEG_DAMP;
         leg[2]   = φl + leg[3] * dt;
+    }
+
+    /**
+     * Spring-pendulum head above the neck.
+     * headAngle = 0 → head centred directly above neck.
+     * Torque = body-frame effective-gravity component + spring restoring force.
+     */
+    private stepHead (dt: number, bodyAx: number, bodyAy: number)
+    {
+        const θ  = this.headAngle;
+        // In the neck's non-inertial frame the effective downward gravity is (GRAVITY - bodyAy)
+        // and there is a lateral pseudo-force (-bodyAx).
+        // For an inverted pendulum the destabilising torque is:
+        //   (GRAVITY - bodyAy) * sin(θ) - (-bodyAx) * cos(θ)  (divided by HEAD_LEN)
+        // The spring opposes the angle: -HEAD_K * θ
+        const α = ((GRAVITY - bodyAy) * Math.sin(θ) + bodyAx * Math.cos(θ)) / HEAD_LEN
+                  - HEAD_K * θ;
+        this.headVel    = (this.headVel + α * dt) * HEAD_DAMP;
+        this.headAngle += this.headVel * dt;
     }
 
     private launch ()
@@ -254,6 +319,7 @@ export class Game extends Scene
         const tvy    = -Math.sin(this.pendAngle);
         this.pendVel = (this.vx * tvx + this.vy * tvy) / this.pendLen;
 
+        this.gripDamp  = 0.82;           // strong initial damping on grab
         this.spinAngle = Math.PI / 2;   // free hand hangs straight down
         this.leftAngle = Math.PI / 2;
         this.state     = 'hanging';
@@ -296,10 +362,12 @@ export class Game extends Scene
                 const stagger = (r % 2 === 1) ? spacingX / 2 : 0;
                 const x = marginX + c * spacingX + stagger + (Math.random() - 0.5) * 55;
                 const y = topY + r * spacingY + (Math.random() - 0.5) * 28;
-                this.pegs.push({
-                    x: Math.max(30, Math.min(WORLD_W - 30, x)),
-                    y: Math.max(30, Math.min(WORLD_H - 30, y)),
-                });
+                const px = Math.max(30, Math.min(WORLD_W - 30, x));
+                const py = Math.max(30, Math.min(WORLD_H - 30, y));
+                // skip pegs inside the Sky Lounge platform area
+                if (py >= PLAT_Y - 10 && py <= PLAT_Y + PLAT_H + 10 &&
+                    px >= PLAT_X1 && px <= PLAT_X2) continue;
+                this.pegs.push({ x: px, y: py });
             }
         }
         this.pegs.sort((a, b) => b.y - a.y);
@@ -310,8 +378,116 @@ export class Game extends Scene
     private draw ()
     {
         this.gfx.clear();
+        this.drawBar();
         this.drawPegs();
         this.drawMonkey();
+    }
+
+    private drawBar ()
+    {
+        const g    = this.gfx;
+        const camY = this.cameras.main.scrollY;
+        const camH = this.cameras.main.height;
+        if (PLAT_Y + PLAT_H < camY - 100 || PLAT_Y - 130 > camY + camH) return;
+
+        const platW = PLAT_X2 - PLAT_X1;
+        const cx    = (PLAT_X1 + PLAT_X2) / 2;
+
+        // ── platform floor — solid white, thick black outline ───────────────
+        g.fillStyle(0xffffff);
+        g.lineStyle(3, 0x000000);
+        g.fillRect(PLAT_X1, PLAT_Y, platW, PLAT_H);
+        g.strokeRect(PLAT_X1, PLAT_Y, platW, PLAT_H);
+        // floor planks (thin lines)
+        g.lineStyle(1, 0xaaaaaa);
+        for (let lx = PLAT_X1 + 28; lx < PLAT_X2 - 4; lx += 28) {
+            g.beginPath(); g.moveTo(lx, PLAT_Y + 2); g.lineTo(lx, PLAT_Y + PLAT_H - 2); g.strokePath();
+        }
+
+        // ── back wall ────────────────────────────────────────────────────────
+        const wallY = PLAT_Y - 62;
+        g.fillStyle(0xfafafa);
+        g.lineStyle(3, 0x000000);
+        g.fillRect(PLAT_X1, wallY, platW, 62);
+        g.strokeRect(PLAT_X1, wallY, platW, 62);
+        // wall panel lines (cartoon wallpaper effect)
+        g.lineStyle(1, 0xcccccc);
+        g.beginPath(); g.moveTo(PLAT_X1, wallY + 20); g.lineTo(PLAT_X2, wallY + 20); g.strokePath();
+        g.beginPath(); g.moveTo(PLAT_X1, wallY + 40); g.lineTo(PLAT_X2, wallY + 40); g.strokePath();
+
+        // ── bar counter surface ───────────────────────────────────────────────
+        g.fillStyle(0xe8e8e8);
+        g.lineStyle(2.5, 0x000000);
+        g.fillRect(PLAT_X1, PLAT_Y - 13, platW, 13);
+        g.strokeRect(PLAT_X1, PLAT_Y - 13, platW, 13);
+        // counter edge shine
+        g.lineStyle(1.5, 0xffffff);
+        g.beginPath(); g.moveTo(PLAT_X1 + 1, PLAT_Y - 12); g.lineTo(PLAT_X2 - 1, PLAT_Y - 12); g.strokePath();
+
+        // ── bottles on back shelf ─────────────────────────────────────────────
+        const bottleBaseY  = PLAT_Y - 13;
+        const numBottles   = 5;
+        const bottleSpread = platW - 30;
+        for (let i = 0; i < numBottles; i++) {
+            const bx  = PLAT_X1 + 15 + (i / (numBottles - 1)) * bottleSpread;
+            const alt = i % 2;   // alternate tall/squat
+            const bH  = alt ? 22 : 28;
+            // bottle body
+            g.fillStyle(alt ? 0xdddddd : 0xffffff);
+            g.lineStyle(2, 0x000000);
+            g.fillRoundedRect(bx - 4, bottleBaseY - bH, 8, bH, 2);
+            g.strokeRoundedRect(bx - 4, bottleBaseY - bH, 8, bH, 2);
+            // bottle neck
+            g.fillRect(bx - 2, bottleBaseY - bH - 9, 4, 10);
+            g.strokeRect(bx - 2, bottleBaseY - bH - 9, 4, 10);
+            // label (cartoon rectangle)
+            g.fillStyle(0x000000, 0.12);
+            g.fillRect(bx - 3, bottleBaseY - bH + 4, 6, 8);
+            g.lineStyle(1, 0x000000);
+            g.strokeRect(bx - 3, bottleBaseY - bH + 4, 6, 8);
+        }
+
+        // ── two cocktail glasses on the counter ───────────────────────────────
+        this.drawCocktailGlass(g, cx - 30, PLAT_Y - 13);
+        this.drawCocktailGlass(g, cx + 30, PLAT_Y - 13);
+    }
+
+    private drawCocktailGlass (g: Phaser.GameObjects.Graphics, cx: number, baseY: number)
+    {
+        const bW = 11;   // half-width of rim
+        const bH = 14;   // bowl height
+        const sH = 11;   // stem height
+        const fW =  8;   // half-width of base
+
+        const rimY  = baseY - sH - bH;
+        const apexY = baseY - sH;
+
+        // liquid fill — light gray (B&W)
+        g.fillStyle(0xcccccc);
+        g.fillTriangle(cx, apexY, cx - bW, rimY, cx + bW, rimY);
+
+        // glass outline — thick black cartoon lines
+        g.lineStyle(2.5, 0x000000);
+        g.beginPath();
+        g.moveTo(cx - bW, rimY);
+        g.lineTo(cx,      apexY);
+        g.lineTo(cx + bW, rimY);
+        g.strokePath();
+        g.beginPath(); g.moveTo(cx - bW, rimY);  g.lineTo(cx + bW, rimY);  g.strokePath();
+        g.beginPath(); g.moveTo(cx,      apexY); g.lineTo(cx,      baseY); g.strokePath();
+        g.beginPath(); g.moveTo(cx - fW, baseY); g.lineTo(cx + fW, baseY); g.strokePath();
+
+        // shine line inside bowl (cartoon highlight)
+        g.lineStyle(1.5, 0xffffff);
+        g.beginPath(); g.moveTo(cx - bW + 3, rimY + 3); g.lineTo(cx - 3, apexY + 5); g.strokePath();
+
+        // garnish — black cherry on a stick
+        g.lineStyle(1.5, 0x000000);
+        g.beginPath(); g.moveTo(cx + bW - 2, rimY); g.lineTo(cx + bW - 5, rimY - 7); g.strokePath();
+        g.fillStyle(0x111111);
+        g.fillCircle(cx + bW - 5, rimY - 10, 4);
+        g.lineStyle(1, 0x000000);
+        g.strokeCircle(cx + bW - 5, rimY - 10, 4);
     }
 
     private drawPegs ()
@@ -397,12 +573,13 @@ export class Game extends Scene
             g.strokePath();
         }
 
-        // ── neck + head ──
-        const bob = this.state === 'hanging' ? Math.sin(pendAngle * 3.5) * 2.5 : 0;
-        const hx  = bx;
-        const hy  = by - BODY_H / 2 - 16 + bob;
+        // ── neck + head (spring-pendulum) ──
+        const neckX = bx;
+        const neckY = by - BODY_H / 2;
+        const hx    = neckX + HEAD_LEN * Math.sin(this.headAngle);
+        const hy    = neckY - HEAD_LEN * Math.cos(this.headAngle);
         g.lineStyle(3, 0x111111);
-        g.beginPath(); g.moveTo(bx, by - BODY_H / 2); g.lineTo(hx, hy + 14); g.strokePath();
+        g.beginPath(); g.moveTo(neckX, neckY); g.lineTo(hx, hy); g.strokePath();
         this.drawHead(hx, hy);
     }
 
