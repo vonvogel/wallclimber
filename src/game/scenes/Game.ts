@@ -28,6 +28,8 @@ export class Game extends Scene
     private pegs:      Peg[]    = [];
     private gfx!:      Phaser.GameObjects.Graphics;
     private hudText!:  Phaser.GameObjects.Text;
+    private hudLeft!:  Phaser.GameObjects.Text;
+    private bestPct:   number = 0;
 
     private state:     GameState = 'hanging';
     private grabPeg!:  Peg;
@@ -80,6 +82,7 @@ export class Game extends Scene
         this.wasSpace  = false;
         this.legL      = [0, 0, 0, 0];
         this.legR      = [0, 0, 0, 0];
+        this.bestPct   = 0;
 
         this.generatePegs();
 
@@ -89,10 +92,16 @@ export class Game extends Scene
         this.gfx = this.add.graphics();
         this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
 
-        this.hudText = this.add.text(12, 12, '', {
-            fontFamily: 'Arial', fontSize: 18, color: '#ffffff',
-            stroke: '#000000', strokeThickness: 4
+        this.hudLeft = this.add.text(12, 12, '[HOLD SPACE to spin, RELEASE to jump]', {
+            fontFamily: 'Arial', fontSize: 15, color: '#ffffff',
+            stroke: '#000000', strokeThickness: 3
         }).setScrollFactor(0).setDepth(10);
+
+        this.hudText = this.add.text(WORLD_W - 12, 12, '', {
+            fontFamily: 'Arial Black', fontSize: 22, color: '#ffff00',
+            stroke: '#000000', strokeThickness: 5,
+            align: 'right'
+        }).setScrollFactor(0).setDepth(10).setOrigin(1, 0);
 
         const startPegs = this.pegs.filter(p => p.y >= WORLD_H - 300 && p.y <= WORLD_H - 200);
         this.grabPeg = startPegs.length > 0
@@ -119,8 +128,9 @@ export class Game extends Scene
         this.cameras.main.centerOn(this.bx, this.by);
         this.draw();
 
-        const pct = Math.round((1 - this.by / WORLD_H) * 100);
-        this.hudText.setText(`Height: ${Math.max(0, pct)}%  [HOLD SPACE to spin, RELEASE to jump]`);
+        const pct = Math.max(0, Math.round((1 - this.by / WORLD_H) * 100));
+        if (pct > this.bestPct) this.bestPct = pct;
+        this.hudText.setText(`Height: ${pct}%\nBest: ${this.bestPct}%`);
     }
 
     // ─── physics ──────────────────────────────────────────────────────────────
@@ -159,7 +169,7 @@ export class Game extends Scene
 
         if (this.bx < 20)            { this.bx = 20;            this.vx =  Math.abs(this.vx) * 0.4; }
         if (this.bx > WORLD_W - 20)  { this.bx = WORLD_W - 20; this.vx = -Math.abs(this.vx) * 0.4; }
-        if (this.by > WORLD_H + 200) { this.scene.start('GameOver'); return; }
+        if (this.by > WORLD_H + 200) { this.scene.start('GameOver', { score: this.bestPct }); return; }
 
         // both arms spin wildly to catch a peg
         this.spinAngle += SPIN_SPD * dt;   // right arm clockwise
