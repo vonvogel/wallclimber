@@ -3,8 +3,7 @@ import { Scene, GameObjects } from 'phaser';
 export class MainMenu extends Scene
 {
     background: GameObjects.Image;
-    logo: GameObjects.Image;
-    title: GameObjects.Text;
+    titleImage: GameObjects.Image;
     private domElement!: Phaser.GameObjects.DOMElement;
 
     constructor ()
@@ -14,14 +13,8 @@ export class MainMenu extends Scene
 
     create ()
     {
-        this.background = this.add.image(512, 384, 'background');
-        this.logo = this.add.image(512, 240, 'logo');
-
-        this.title = this.add.text(512, 385, 'Wall Climber', {
-            fontFamily: 'Arial Black', fontSize: 38, color: '#ffffff',
-            stroke: '#000000', strokeThickness: 8,
-            align: 'center'
-        }).setOrigin(0.5);
+        this.background = this.add.image(512, 384, 'background').setDisplaySize(1024, 768).setTint(0x888888);
+        this.titleImage = this.add.image(512, 150, 'titletext').setDisplaySize(900, 270).setScrollFactor(0);
 
         this.domElement = this.add.dom(512, 510).createFromHTML(`
             <div style="text-align:center; font-family:Arial,sans-serif">

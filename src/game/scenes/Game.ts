@@ -8,12 +8,12 @@ const GRAVITY   = 900;
 const DAMPING   = 0.992;
 const LEG_DAMP  = 0.95;
 const SPIN_SPD  = Math.PI * 2;
-const BODY_H    = 38;
-const BODY_W    = 26;
-const ARM_U     = 25;
-const ARM_L     = 22;
-const LEG_U     = 24;
-const LEG_L     = 21;
+const BODY_H    = 32;
+const BODY_W    = 30;
+const ARM_U     = 20;
+const ARM_L     = 18;
+const LEG_U     = 18;
+const LEG_L     = 14;
 const HEAD_LEN  = 16;   // neck to head-centre distance
 const HEAD_K    = 150;  // spring stiffness (rad/s²) — must exceed GRAVITY/HEAD_LEN ≈ 56
 const HEAD_DAMP = 0.97; // angular damping per step
@@ -73,6 +73,10 @@ export class Game extends Scene
     private gripDamp:  number  = 0.992;
     private startTime: number  = 0;
 
+    private celebrating:  boolean = false;
+    private celebrateTimer: number = 0;
+    private celebrateElapsed: number = 0;
+
     private spaceKey!: Phaser.Input.Keyboard.Key;
     private wasSpace:  boolean = false;
 
@@ -100,9 +104,20 @@ export class Game extends Scene
         this.legR      = [0, 0, 0, 0];
         this.bestPct   = 0;
         this.gripDamp  = DAMPING;
-        this.headAngle = 0;
-        this.headVel   = 0;
-        this.startTime = Date.now();
+        this.headAngle       = 0;
+        this.headVel         = 0;
+        this.startTime       = Date.now();
+        this.celebrating     = false;
+        this.celebrateTimer  = 0;
+        this.celebrateElapsed = 0;
+
+        if (!this.textures.exists('confettiRect')) {
+            const cg = this.make.graphics({ x: 0, y: 0, add: false });
+            cg.fillStyle(0xffffff);
+            cg.fillRect(0, 0, 8, 4);
+            cg.generateTexture('confettiRect', 8, 4);
+            cg.destroy();
+        }
 
         this.generatePegs();
 
@@ -144,6 +159,16 @@ export class Game extends Scene
     {
         const dt    = Math.min(delta / 1000, 0.05);
         const space = this.spaceKey.isDown;
+
+        if (this.celebrating) {
+            this.celebrateTimer += delta;
+            if (this.celebrateTimer > 3200) {
+                this.scene.start('GameOver', { type: 'skylounge', time: this.celebrateElapsed });
+            }
+            this.cameras.main.centerOn(this.bx, this.by);
+            this.draw();
+            return;
+        }
 
         if (this.state === 'hanging') {
             this.tickHanging(dt, space);
@@ -206,7 +231,7 @@ export class Game extends Scene
             if (this.vy > 0 && feetY >= PLAT_Y && feetY <= PLAT_Y + PLAT_H + 20) {
                 // Landing from above → Sky Lounge!
                 const elapsed = Math.round((Date.now() - this.startTime) / 100) / 10;
-                this.scene.start('GameOver', { type: 'skylounge', time: elapsed });
+                this.triggerCelebration(elapsed);
                 return;
             }
             if (this.vy < 0 && feetY > PLAT_Y && this.by < PLAT_Y + PLAT_H + BODY_H / 2 + 5) {
@@ -344,6 +369,34 @@ export class Game extends Scene
         ];
     }
 
+    private triggerCelebration (elapsed: number)
+    {
+        this.celebrating      = true;
+        this.celebrateTimer   = 0;
+        this.celebrateElapsed = elapsed;
+
+        // land the kabouter on the platform
+        this.vy = 0; this.vx = 0;
+        this.by = PLAT_Y - BODY_H / 2;
+
+        const cx = (PLAT_X1 + PLAT_X2) / 2;
+        const colors = [0xff3333, 0x33cc44, 0x3377ff, 0xffcc00, 0xff55ff, 0x00ccdd, 0xff8800, 0xffffff];
+
+        for (const color of colors) {
+            const emitter = this.add.particles(cx, PLAT_Y - 10, 'confettiRect', {
+                x:          { min: -WORLD_W * 0.4, max: WORLD_W * 0.4 },
+                speedX:     { min: -220, max: 220 },
+                speedY:     { min: -700, max: -200 },
+                gravityY:   500,
+                rotate:     { min: 0, max: 360 },
+                lifespan:   3500,
+                scale:      { min: 0.7, max: 2.0 },
+                tint:       color,
+            });
+            emitter.explode(25, cx, PLAT_Y - 10);
+        }
+    }
+
     // ─── peg generation ───────────────────────────────────────────────────────
 
     private generatePegs ()
@@ -364,9 +417,8 @@ export class Game extends Scene
                 const y = topY + r * spacingY + (Math.random() - 0.5) * 28;
                 const px = Math.max(30, Math.min(WORLD_W - 30, x));
                 const py = Math.max(30, Math.min(WORLD_H - 30, y));
-                // skip pegs inside the Sky Lounge platform area
-                if (py >= PLAT_Y - 10 && py <= PLAT_Y + PLAT_H + 10 &&
-                    px >= PLAT_X1 && px <= PLAT_X2) continue;
+                // skip pegs at or above the Sky Lounge platform
+                if (py < PLAT_Y + PLAT_H + 30) continue;
                 this.pegs.push({ x: px, y: py });
             }
         }
@@ -380,7 +432,7 @@ export class Game extends Scene
         this.gfx.clear();
         this.drawBar();
         this.drawPegs();
-        this.drawMonkey();
+        this.drawKabouter();
     }
 
     private drawBar ()
@@ -507,71 +559,69 @@ export class Game extends Scene
         }
     }
 
-    private drawMonkey ()
+    private drawKabouter ()
     {
         const g  = this.gfx;
         const { bx, by, grabPeg, grabLimb, pendAngle, spinAngle } = this;
-        const sY = by - BODY_H / 2 + 8;   // shoulder Y
-        const hY = by + BODY_H / 2 - 5;   // hip Y
+        const sY = by - BODY_H / 2 + 6;   // shoulder Y
+        const hY = by + BODY_H / 2 - 4;   // hip Y
 
-        // ── legs (always ragdoll, drawn first so body overlaps) ──
+        // ── legs (ragdoll, drawn first so body overlaps) ──
         this.drawLegs(hY);
 
-        // ── arms ──
+        // ── arms with hook-on-stick ──
         if (this.state === 'hanging') {
-            // grabbing arm: two-segment stretched toward peg
-            const grabSX = bx + (grabLimb === 'rightHand' ? 13 : -13);
+            // grabbing arm: stretched toward peg, hook at peg
+            const grabSX = bx + (grabLimb === 'rightHand' ? 11 : -11);
             const gDir   = Math.atan2(grabPeg.y - sY, grabPeg.x - grabSX);
             const gEX    = grabSX + Math.cos(gDir) * ARM_U;
             const gEY    = sY     + Math.sin(gDir) * ARM_U;
-            g.lineStyle(4, 0x111111);
+            g.lineStyle(3.5, 0x111111);
             g.beginPath(); g.moveTo(grabSX, sY); g.lineTo(gEX, gEY); g.lineTo(grabPeg.x, grabPeg.y); g.strokePath();
+            this.drawHook(grabPeg.x, grabPeg.y, gDir);
 
-            // free arm: spins (or hangs down at rest)
-            const freeSX = bx + (grabLimb === 'rightHand' ? -13 : 13);
+            // free arm: spins with hook dangling at tip
+            const freeSX = bx + (grabLimb === 'rightHand' ? -11 : 11);
             const fEX    = freeSX + Math.cos(spinAngle) * ARM_U;
             const fEY    = sY     + Math.sin(spinAngle) * ARM_U;
             const fHX    = fEX    + Math.cos(spinAngle) * ARM_L;
             const fHY    = fEY    + Math.sin(spinAngle) * ARM_L;
-            g.lineStyle(4, 0x111111);
+            g.lineStyle(3.5, 0x111111);
             g.beginPath(); g.moveTo(freeSX, sY); g.lineTo(fEX, fEY); g.lineTo(fHX, fHY); g.strokePath();
-            g.fillStyle(0xffffff); g.lineStyle(2, 0x111111);
-            g.fillCircle(fHX, fHY, 5); g.strokeCircle(fHX, fHY, 5);
+            this.drawHook(fHX, fHY, spinAngle);
 
         } else {
             // flying: both arms spin wildly
-            const lEX = bx - 13 + Math.cos(this.leftAngle) * ARM_U;
+            const lEX = bx - 11 + Math.cos(this.leftAngle) * ARM_U;
             const lEY = sY       + Math.sin(this.leftAngle) * ARM_U;
             const lHX = lEX      + Math.cos(this.leftAngle) * ARM_L;
             const lHY = lEY      + Math.sin(this.leftAngle) * ARM_L;
-            g.lineStyle(4, 0x111111);
-            g.beginPath(); g.moveTo(bx - 13, sY); g.lineTo(lEX, lEY); g.lineTo(lHX, lHY); g.strokePath();
-            g.fillStyle(0xffffff); g.lineStyle(2, 0x111111);
-            g.fillCircle(lHX, lHY, 5); g.strokeCircle(lHX, lHY, 5);
+            g.lineStyle(3.5, 0x111111);
+            g.beginPath(); g.moveTo(bx - 11, sY); g.lineTo(lEX, lEY); g.lineTo(lHX, lHY); g.strokePath();
+            this.drawHook(lHX, lHY, this.leftAngle);
 
-            const rEX = bx + 13 + Math.cos(this.spinAngle) * ARM_U;
+            const rEX = bx + 11 + Math.cos(this.spinAngle) * ARM_U;
             const rEY = sY       + Math.sin(this.spinAngle) * ARM_U;
             const rHX = rEX      + Math.cos(this.spinAngle) * ARM_L;
             const rHY = rEY      + Math.sin(this.spinAngle) * ARM_L;
-            g.lineStyle(4, 0x111111);
-            g.beginPath(); g.moveTo(bx + 13, sY); g.lineTo(rEX, rEY); g.lineTo(rHX, rHY); g.strokePath();
-            g.fillStyle(0xffffff); g.lineStyle(2, 0x111111);
-            g.fillCircle(rHX, rHY, 5); g.strokeCircle(rHX, rHY, 5);
+            g.lineStyle(3.5, 0x111111);
+            g.beginPath(); g.moveTo(bx + 11, sY); g.lineTo(rEX, rEY); g.lineTo(rHX, rHY); g.strokePath();
+            this.drawHook(rHX, rHY, this.spinAngle);
         }
 
-        // ── body ──
+        // ── body (round gnome torso) ──
         g.fillStyle(0xffffff);
         g.lineStyle(3, 0x111111);
-        g.fillRoundedRect(bx - BODY_W / 2, by - BODY_H / 2, BODY_W, BODY_H, 7);
-        g.strokeRoundedRect(bx - BODY_W / 2, by - BODY_H / 2, BODY_W, BODY_H, 7);
-        g.lineStyle(1, 0x888888);
-        for (let i = 1; i < 4; i++) {
-            const ly = by - BODY_H / 2 + i * (BODY_H / 4);
-            g.beginPath();
-            g.moveTo(bx - BODY_W / 2 + 5, ly);
-            g.lineTo(bx + BODY_W / 2 - 5, ly);
-            g.strokePath();
-        }
+        g.fillRoundedRect(bx - BODY_W / 2, by - BODY_H / 2, BODY_W, BODY_H, 11);
+        g.strokeRoundedRect(bx - BODY_W / 2, by - BODY_H / 2, BODY_W, BODY_H, 11);
+        // belt
+        g.fillStyle(0x111111);
+        g.fillRect(bx - BODY_W / 2 + 3, by + 1, BODY_W - 6, 5);
+        // belt buckle
+        g.fillStyle(0xffffff);
+        g.lineStyle(1.5, 0x111111);
+        g.fillRect(bx - 4, by + 1, 8, 5);
+        g.strokeRect(bx - 4, by + 1, 8, 5);
 
         // ── neck + head (spring-pendulum) ──
         const neckX = bx;
@@ -580,7 +630,7 @@ export class Game extends Scene
         const hy    = neckY - HEAD_LEN * Math.cos(this.headAngle);
         g.lineStyle(3, 0x111111);
         g.beginPath(); g.moveTo(neckX, neckY); g.lineTo(hx, hy); g.strokePath();
-        this.drawHead(hx, hy);
+        this.drawKaboterHead(hx, hy);
     }
 
     private drawLegs (hipY: number)
@@ -593,34 +643,91 @@ export class Game extends Scene
             const φu   = leg[0];
             const φl   = leg[2];
 
-            const kx = hipX     + LEG_U * Math.sin(φu);
-            const ky = hipY     + LEG_U * Math.cos(φu);
-            const fx = kx       + LEG_L * Math.sin(φl);
-            const fy = ky       + LEG_L * Math.cos(φl);
+            const kx = hipX  + LEG_U * Math.sin(φu);
+            const ky = hipY  + LEG_U * Math.cos(φu);
+            const fx = kx    + LEG_L * Math.sin(φl);
+            const fy = ky    + LEG_L * Math.cos(φl);
 
-            g.lineStyle(4, 0x111111);
+            g.lineStyle(5, 0x111111);
             g.beginPath(); g.moveTo(hipX, hipY); g.lineTo(kx, ky); g.lineTo(fx, fy); g.strokePath();
-            g.fillStyle(0xffffff); g.lineStyle(1.5, 0x111111);
-            g.fillCircle(fx, fy, 4); g.strokeCircle(fx, fy, 4);
+            // stubby gnome boot
+            g.fillStyle(0x111111); g.lineStyle(1.5, 0x111111);
+            g.fillRoundedRect(fx - 5, fy - 3, 10, 6, 3);
         }
     }
 
-    private drawHead (hx: number, hy: number)
+    private drawHook (tipX: number, tipY: number, dir: number)
     {
         const g = this.gfx;
-        g.fillStyle(0xffffff);
-        g.lineStyle(3, 0x111111);
-        g.fillCircle(hx, hy, 15);
-        g.strokeCircle(hx, hy, 15);
-        g.fillStyle(0x111111);
-        g.fillCircle(hx - 5, hy - 2, 3);
-        g.fillCircle(hx + 5, hy - 2, 3);
-        g.lineStyle(2, 0x111111);
+        // arc-based hook: 270° curve forming a J shape
+        const hookR = 5;
+        const perpA = dir + Math.PI / 2;
+        const cX    = tipX + Math.cos(perpA) * hookR;
+        const cY    = tipY + Math.sin(perpA) * hookR;
+        const startA = dir - Math.PI / 2;  // from center back to tip
+        g.lineStyle(2.5, 0x111111);
         g.beginPath();
-        g.arc(hx, hy + 4, 6, 0.25, Math.PI - 0.25);
+        g.arc(cX, cY, hookR, startA, startA + Math.PI * 1.5, false);
         g.strokePath();
-        g.fillStyle(0xffffff); g.lineStyle(2, 0x111111);
-        g.fillCircle(hx - 14, hy, 4); g.strokeCircle(hx - 14, hy, 4);
-        g.fillCircle(hx + 14, hy, 4); g.strokeCircle(hx + 14, hy, 4);
+    }
+
+    private drawKaboterHead (hx: number, hy: number)
+    {
+        const g      = this.gfx;
+        const headR  = 14;
+        const brimY  = hy - headR + 3;
+
+        // ── pointy hat cone (draw behind head) ──
+        g.fillStyle(0xffffff);
+        g.lineStyle(2.5, 0x111111);
+        // slight tilt: apex offset a few pixels right
+        g.fillTriangle(hx - 12, brimY, hx + 12, brimY, hx + 4, hy - headR - 24);
+        g.strokeTriangle(hx - 12, brimY, hx + 12, brimY, hx + 4, hy - headR - 24);
+        // hat stripe
+        g.lineStyle(1.5, 0x888888);
+        g.beginPath();
+        g.moveTo(hx - 7, brimY - 6);
+        g.lineTo(hx + 6, brimY - 6);
+        g.strokePath();
+
+        // ── hat brim ──
+        g.fillStyle(0x111111);
+        g.fillRect(hx - 15, brimY - 5, 30, 6);
+        g.lineStyle(1.5, 0x111111);
+        g.strokeRect(hx - 15, brimY - 5, 30, 6);
+
+        // ── head circle ──
+        g.fillStyle(0xffffff);
+        g.lineStyle(2.5, 0x111111);
+        g.fillCircle(hx, hy, headR);
+        g.strokeCircle(hx, hy, headR);
+
+        // ── eyes ──
+        g.fillStyle(0x111111);
+        g.fillCircle(hx - 4, hy - 3, 2.5);
+        g.fillCircle(hx + 4, hy - 3, 2.5);
+
+        // ── rosy cheeks ──
+        g.fillStyle(0xcccccc);
+        g.fillCircle(hx - 7, hy + 1, 3);
+        g.fillCircle(hx + 7, hy + 1, 3);
+
+        // ── nose ──
+        g.fillStyle(0xdddddd);
+        g.lineStyle(1.5, 0x111111);
+        g.fillCircle(hx, hy + 2, 3.5);
+        g.strokeCircle(hx, hy + 2, 3.5);
+
+        // ── beard (fluffy triangle below head) ──
+        const beardY = hy + headR - 3;
+        g.fillStyle(0xffffff);
+        g.lineStyle(2, 0x111111);
+        g.fillTriangle(hx - 11, beardY, hx + 11, beardY, hx, beardY + 20);
+        g.strokeTriangle(hx - 11, beardY, hx + 11, beardY, hx, beardY + 20);
+        // beard texture
+        g.lineStyle(1, 0x999999);
+        g.beginPath(); g.moveTo(hx - 6, beardY + 2); g.lineTo(hx - 3, beardY + 14); g.strokePath();
+        g.beginPath(); g.moveTo(hx,     beardY + 2); g.lineTo(hx,     beardY + 17); g.strokePath();
+        g.beginPath(); g.moveTo(hx + 6, beardY + 2); g.lineTo(hx + 3, beardY + 14); g.strokePath();
     }
 }
