@@ -29,6 +29,13 @@ type GrabLimb  = 'leftHand' | 'rightHand';
 
 interface Peg { x: number; y: number; }
 
+interface Parakeet {
+    x: number; y: number;
+    vx: number; vy: number;
+    wingPhase: number;
+    hitCooldown: number;  // ms — skip collision while > 0
+}
+
 // [upperAngle, upperVel, lowerAngle, lowerVel]
 type LegState = [number, number, number, number];
 
@@ -73,6 +80,10 @@ export class Game extends Scene
     private gripDamp:  number  = 0.992;
     private startTime: number  = 0;
 
+    private parakeets:      Parakeet[] = [];
+    private parakeetTimer:  number     = 0;   // ms since last spawn
+    private parakeetNext:   number     = 5000; // ms until next spawn
+
     private celebrating:  boolean = false;
     private celebrateTimer: number = 0;
     private celebrateElapsed: number = 0;
@@ -110,6 +121,9 @@ export class Game extends Scene
         this.celebrating     = false;
         this.celebrateTimer  = 0;
         this.celebrateElapsed = 0;
+        this.parakeets       = [];
+        this.parakeetTimer   = 0;
+        this.parakeetNext    = 2000 + Math.random() * 3000; // first one soon
 
         if (!this.textures.exists('confettiRect')) {
             const cg = this.make.graphics({ x: 0, y: 0, add: false });
@@ -159,6 +173,8 @@ export class Game extends Scene
     {
         const dt    = Math.min(delta / 1000, 0.05);
         const space = this.spaceKey.isDown;
+
+        this.updateParakeets(delta);
 
         if (this.celebrating) {
             this.celebrateTimer += delta;
@@ -223,7 +239,7 @@ export class Game extends Scene
 
         if (this.bx < 20)            { this.bx = 20;            this.vx =  Math.abs(this.vx) * 0.4; }
         if (this.bx > WORLD_W - 20)  { this.bx = WORLD_W - 20; this.vx = -Math.abs(this.vx) * 0.4; }
-        if (this.by > WORLD_H + 200) { this.scene.start('GameOver', { score: this.bestPct }); return; }
+        if (this.by > WORLD_H + 200) { this.safePlay('ohno'); this.scene.start('GameOver', { score: this.bestPct }); return; }
 
         // Platform collision
         const feetY = this.by + BODY_H / 2;
@@ -241,9 +257,17 @@ export class Game extends Scene
             }
         }
 
-        // both arms spin wildly to catch a peg
-        this.spinAngle += SPIN_SPD * dt;   // right arm clockwise
-        this.leftAngle -= SPIN_SPD * dt;   // left arm counter-clockwise
+        if (this.vy < 0) {
+            // Moving upward: stretch both arms symmetrically around the flight direction
+            const flightAngle = Math.atan2(this.vy, this.vx);
+            const spread = 22.4 * Math.PI / 180;   // half the 45° spread
+            this.spinAngle = flightAngle + spread;  // right arm
+            this.leftAngle = flightAngle - spread;  // left arm
+        } else {
+            // Falling: both arms spin wildly to catch a peg
+            this.spinAngle += SPIN_SPD * dt;   // right arm clockwise
+            this.leftAngle -= SPIN_SPD * dt;   // left arm counter-clockwise
+        }
 
         // body in free fall → effective gravity in body frame = 0 → limbs gently drift
         this.stepLeg(this.legL, dt, 0, GRAVITY);
@@ -296,6 +320,16 @@ export class Game extends Scene
         this.headAngle += this.headVel * dt;
     }
 
+    private safePlay (key: string)
+    {
+        if (this.cache.audio.exists(key)) this.sound.play(key);
+    }
+
+    private rndPlay (a: string, b: string)
+    {
+        this.safePlay(Math.random() < 0.5 ? a : b);
+    }
+
     private launch ()
     {
         const tangLen = this.pendVel * this.pendLen;
@@ -309,6 +343,7 @@ export class Game extends Scene
         // seed both arm angles from current spin position
         this.leftAngle = this.spinAngle;
         this.state     = 'flying';
+        this.rndPlay('gnome1', 'gnome2');
     }
 
     private checkGrab ()
@@ -348,6 +383,7 @@ export class Game extends Scene
         this.spinAngle = Math.PI / 2;   // free hand hangs straight down
         this.leftAngle = Math.PI / 2;
         this.state     = 'hanging';
+        this.rndPlay('oof1', 'oof2');
     }
 
     // ─── helpers ──────────────────────────────────────────────────────────────
@@ -374,6 +410,7 @@ export class Game extends Scene
         this.celebrating      = true;
         this.celebrateTimer   = 0;
         this.celebrateElapsed = elapsed;
+        this.rndPlay('woohoo1', 'woohoo2');
 
         // land the kabouter on the platform
         this.vy = 0; this.vx = 0;
@@ -397,6 +434,220 @@ export class Game extends Scene
         }
     }
 
+    // ─── parakeets ────────────────────────────────────────────────────────────
+
+    private updateParakeets (deltaMs: number)
+    {
+        // move existing parakeets
+        const dt = deltaMs / 1000;
+        for (let i = this.parakeets.length - 1; i >= 0; i--) {
+            const p = this.parakeets[i];
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.wingPhase    += dt * 9;
+            p.hitCooldown   = Math.max(0, p.hitCooldown - deltaMs);
+            if (p.x < -120 || p.x > WORLD_W + 120) this.parakeets.splice(i, 1);
+        }
+        this.checkParakeetCollisions();
+
+        // spawn timer — interval gradient: 20 s at bottom, 5 s at top
+        this.parakeetTimer += deltaMs;
+        if (this.parakeetTimer >= this.parakeetNext) {
+            this.parakeetTimer = 0;
+            const heightFrac   = Math.max(0, Math.min(1, 1 - this.by / WORLD_H));
+            const baseInterval = 10000 - heightFrac * 7000;   // 10 000→3 000 ms
+            // next interval with ±30 % jitter
+            this.parakeetNext = baseInterval * (0.7 + Math.random() * 0.6);
+            this.spawnParakeet();
+        }
+    }
+
+    /** Squared distance from point (px,py) to segment (ax,ay)→(bx2,by2). */
+    private segDistSq (px: number, py: number, ax: number, ay: number, bx2: number, by2: number): number
+    {
+        const ddx = bx2 - ax, ddy = by2 - ay;
+        const lenSq = ddx * ddx + ddy * ddy;
+        if (lenSq === 0) { const ex = px-ax, ey = py-ay; return ex*ex + ey*ey; }
+        const t  = Math.max(0, Math.min(1, ((px-ax)*ddx + (py-ay)*ddy) / lenSq));
+        const cx = px - (ax + t*ddx), cy = py - (ay + t*ddy);
+        return cx*cx + cy*cy;
+    }
+
+    private parakeetHitsKabouter (px: number, py: number): boolean
+    {
+        const { bx, by } = this;
+        const sY   = by - BODY_H / 2 + 6;   // shoulder Y
+        const hY   = by + BODY_H / 2 - 4;   // hip Y
+
+        // torso
+        const tx = px-bx, ty = py-by;
+        if (tx*tx + ty*ty < 18*18) return true;
+
+        // head
+        const neckX = bx, neckY = by - BODY_H / 2;
+        const hx = neckX + HEAD_LEN * Math.sin(this.headAngle);
+        const hy = neckY - HEAD_LEN * Math.cos(this.headAngle);
+        const hddx = px-hx, hddy = py-hy;
+        if (hddx*hddx + hddy*hddy < 15*15) return true;
+
+        // hat (cone above head)
+        const hatCY = hy - 16;
+        const hatDX = px-hx, hatDY = py-hatCY;
+        if (hatDX*hatDX + hatDY*hatDY < 15*15) return true;
+
+        // arms
+        if (this.state === 'hanging') {
+            const grabSX = bx + (this.grabLimb === 'rightHand' ?  11 : -11);
+            if (this.segDistSq(px, py, grabSX, sY, this.grabPeg.x, this.grabPeg.y) < 10*10) return true;
+            const freeSX = bx + (this.grabLimb === 'rightHand' ? -11 :  11);
+            const fHX    = freeSX + Math.cos(this.spinAngle) * (ARM_U + ARM_L);
+            const fHY    = sY     + Math.sin(this.spinAngle) * (ARM_U + ARM_L);
+            if (this.segDistSq(px, py, freeSX, sY, fHX, fHY) < 10*10) return true;
+        } else {
+            const lHX = bx - 11 + Math.cos(this.leftAngle)  * (ARM_U + ARM_L);
+            const lHY = sY      + Math.sin(this.leftAngle)  * (ARM_U + ARM_L);
+            const rHX = bx + 11 + Math.cos(this.spinAngle)  * (ARM_U + ARM_L);
+            const rHY = sY      + Math.sin(this.spinAngle)  * (ARM_U + ARM_L);
+            if (this.segDistSq(px, py, bx-11, sY, lHX, lHY) < 10*10) return true;
+            if (this.segDistSq(px, py, bx+11, sY, rHX, rHY) < 10*10) return true;
+        }
+
+        // legs
+        const legs: [number, LegState][] = [[-1, this.legL], [1, this.legR]];
+        for (const [side, leg] of legs) {
+            const hipX = bx + side * 9;
+            const kx   = hipX + LEG_U * Math.sin(leg[0]);
+            const ky   = hY   + LEG_U * Math.cos(leg[0]);
+            const fx   = kx   + LEG_L * Math.sin(leg[2]);
+            const fy   = ky   + LEG_L * Math.cos(leg[2]);
+            if (this.segDistSq(px, py, hipX, hY, kx, ky) < 9*9) return true;
+            if (this.segDistSq(px, py, kx, ky, fx, fy)   < 9*9) return true;
+        }
+
+        return false;
+    }
+
+    private checkParakeetCollisions ()
+    {
+        if (this.celebrating) return;
+
+        for (const p of this.parakeets) {
+            if (p.hitCooldown > 0) continue;
+            if (!this.parakeetHitsKabouter(p.x, p.y)) continue;
+
+            // ── parakeet bounces: reverse horizontal, keep vertical ──
+            p.vx *= -1;
+            p.hitCooldown = 600;   // ms
+            this.safePlay('parakeethit');
+
+            if (this.state === 'hanging') {
+                // knocked off peg — inherit pendulum tangential velocity + bird impact
+                const tangLen  = this.pendVel * this.pendLen;
+                const tvx      =  Math.cos(this.pendAngle) * tangLen;
+                const tvy      = -Math.sin(this.pendAngle) * tangLen;
+                this.vx        = p.vx * 0.65 + tvx;   // note: vx already reversed above
+                this.vy        = p.vy * 0.65 + tvy;
+                this.lastPeg   = this.grabPeg;
+                this.spinAngle = Math.PI / 2;
+                this.leftAngle = Math.PI / 2;
+                this.wasSpace  = false;   // discard held-space so it can't trigger a launch
+                this.state     = 'flying';
+            } else {
+                // mid-air — deflect trajectory
+                this.vx += p.vx * 0.55;   // vx already reversed
+                this.vy += p.vy * 0.55;
+            }
+        }
+    }
+
+    private spawnParakeet ()
+    {
+        const fromLeft = Math.random() < 0.5;
+        const spawnX   = fromLeft ? -40 : WORLD_W + 40;
+
+        // spawn at a random Y along the wall, aim straight at the kabouter body
+        const spawnY = this.by + (Math.random() - 0.5) * 400;
+        const dx     = Math.abs(this.bx - spawnX);
+        const dy     = this.by - spawnY;
+        const angle  = Math.atan2(dy, dx);   // direct line to kabouter, no clamp
+
+        const speed = 200 + Math.random() * 100;
+        this.parakeets.push({
+            x:           spawnX,
+            y:           spawnY,
+            vx:          Math.cos(angle) * speed * (fromLeft ? 1 : -1),
+            vy:          Math.sin(angle) * speed,
+            wingPhase:   Math.random() * Math.PI * 2,
+            hitCooldown: 0,
+        });
+        this.rndPlay('parakeet1', 'parakeet2');
+    }
+
+    private drawParakeets ()
+    {
+        const g      = this.gfx;
+        const camY   = this.cameras.main.scrollY;
+        const camH   = this.cameras.main.height;
+
+        for (const p of this.parakeets) {
+            if (p.y < camY - 60 || p.y > camY + camH + 60) continue;
+
+            const right = p.vx > 0;
+            const dir   = right ? 1 : -1;
+            const flapA = Math.sin(p.wingPhase);       // -1..1
+            const flapB = Math.sin(p.wingPhase + 1.2); // offset second wing
+
+            // ── tail ──
+            g.fillStyle(0x2299aa);
+            g.lineStyle(1, 0x115566);
+            const tx = p.x - dir * 10;
+            g.fillTriangle(tx, p.y - 3, tx - dir * 10, p.y - 6, tx - dir * 10, p.y + 4);
+            g.strokeTriangle(tx, p.y - 3, tx - dir * 10, p.y - 6, tx - dir * 10, p.y + 4);
+
+            // ── upper wing (behind body) ──
+            const wTipX = p.x - dir * 6 + (right ? -1 : 1) * 3;
+            const wTipY = p.y - 12 + flapA * 10;
+            g.fillStyle(0x33bb55);
+            g.lineStyle(1, 0x227733);
+            g.fillTriangle(p.x - dir * 4, p.y + 2, p.x + dir * 6, p.y - 1, wTipX, wTipY);
+            g.strokeTriangle(p.x - dir * 4, p.y + 2, p.x + dir * 6, p.y - 1, wTipX, wTipY);
+
+            // ── body ──
+            g.fillStyle(0x44cc55);
+            g.lineStyle(1.5, 0x227733);
+            g.fillEllipse(p.x, p.y, 22, 11);
+            g.strokeEllipse(p.x, p.y, 22, 11);
+
+            // ── lower wing tip (in front) ──
+            const w2X = p.x + (right ? -2 : 2);
+            const w2Y = p.y - 8 + flapB * 7;
+            g.fillStyle(0x55ee77);
+            g.lineStyle(1, 0x33aa55);
+            g.fillTriangle(p.x - dir * 2, p.y + 1, p.x + dir * 5, p.y - 1, w2X, w2Y);
+
+            // ── head ──
+            const hx = p.x + dir * 10;
+            g.fillStyle(0x44cc55);
+            g.lineStyle(1.5, 0x227733);
+            g.fillCircle(hx, p.y - 2, 6);
+            g.strokeCircle(hx, p.y - 2, 6);
+
+            // ── eye ──
+            g.fillStyle(0x111111);
+            g.fillCircle(hx + dir * 2, p.y - 3, 1.5);
+
+            // ── beak ──
+            g.fillStyle(0xffbb22);
+            g.lineStyle(1, 0xcc8800);
+            const bx2 = hx + dir * 6;
+            g.fillTriangle(hx + dir * 5, p.y - 3, bx2 + dir * 4, p.y - 1, bx2 + dir * 4, p.y + 2);
+
+            // ── cheek patch ──
+            g.fillStyle(0xffaaaa, 0.7);
+            g.fillCircle(hx - dir * 1, p.y, 2.5);
+        }
+    }
+
     // ─── peg generation ───────────────────────────────────────────────────────
 
     private generatePegs ()
@@ -417,8 +668,9 @@ export class Game extends Scene
                 const y = topY + r * spacingY + (Math.random() - 0.5) * 28;
                 const px = Math.max(30, Math.min(WORLD_W - 30, x));
                 const py = Math.max(30, Math.min(WORLD_H - 30, y));
-                // skip pegs at or above the Sky Lounge platform
-                if (py < PLAT_Y + PLAT_H + 30) continue;
+                // clear pegs near the top only within the lounge + 2 lounge-widths to the right
+                const platW = PLAT_X2 - PLAT_X1;
+                if (py < PLAT_Y + PLAT_H + 30 && px <= PLAT_X2 + 2 * platW) continue;
                 this.pegs.push({ x: px, y: py });
             }
         }
@@ -432,6 +684,7 @@ export class Game extends Scene
         this.gfx.clear();
         this.drawBar();
         this.drawPegs();
+        this.drawParakeets();
         this.drawKabouter();
     }
 
@@ -678,7 +931,7 @@ export class Game extends Scene
         const brimY  = hy - headR + 3;
 
         // ── pointy hat cone (draw behind head) ──
-        g.fillStyle(0xffffff);
+        g.fillStyle(0xcc1111);
         g.lineStyle(2.5, 0x111111);
         // slight tilt: apex offset a few pixels right
         g.fillTriangle(hx - 12, brimY, hx + 12, brimY, hx + 4, hy - headR - 24);

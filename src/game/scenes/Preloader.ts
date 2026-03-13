@@ -32,6 +32,16 @@ export class Preloader extends Scene
         this.load.setPath('assets');
         this.load.image('titletext', 'titletext2.png');
         this.load.image('greenwall', 'greenwall.png');
+        this.load.audio('gnome1',       'gnome1.mp3');
+        this.load.audio('gnome2',       'gnome2.mp3');
+        this.load.audio('oof1',         'oof1.mp3');
+        this.load.audio('oof2',         'oof2.mp3');
+        this.load.audio('parakeet1',    'parakeet1.mp3');
+        this.load.audio('parakeet2',    'parakeet2.mp3');
+        this.load.audio('parakeethit',  'parakeethitshort.wav');
+        this.load.audio('ohno',         'ohno.mp3');
+        this.load.audio('woohoo1',      'woohoo1.mp3');
+        this.load.audio('woohoo2',      'woohoo2.mp3');
     }
 
     create ()

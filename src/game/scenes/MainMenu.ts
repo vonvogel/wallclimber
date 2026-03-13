@@ -14,7 +14,7 @@ export class MainMenu extends Scene
     create ()
     {
         this.background = this.add.image(512, 384, 'background').setDisplaySize(1024, 768).setTint(0x888888);
-        this.titleImage = this.add.image(512, 150, 'titletext').setDisplaySize(900, 270).setScrollFactor(0);
+        this.titleImage = this.add.image(512, 160, 'titletext').setDisplaySize(600, 360).setScrollFactor(0);
 
         this.domElement = this.add.dom(512, 510).createFromHTML(`
             <div style="text-align:center; font-family:Arial,sans-serif">
