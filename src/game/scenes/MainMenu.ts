@@ -13,10 +13,13 @@ export class MainMenu extends Scene
 
     create ()
     {
-        this.background = this.add.image(512, 384, 'background').setDisplaySize(1024, 768).setTint(0x888888);
-        this.titleImage = this.add.image(512, 160, 'titletext').setDisplaySize(600, 360).setScrollFactor(0);
+        const W = this.scale.width;
+        const H = this.scale.height;
 
-        this.domElement = this.add.dom(512, 510).createFromHTML(`
+        this.background = this.add.image(W / 2, H / 2, 'background').setDisplaySize(W, H).setTint(0x888888);
+        this.titleImage = this.add.image(W / 2, H * 0.25, 'titletext').setDisplaySize(W * 0.6, H * 0.38);
+
+        this.domElement = this.add.dom(W / 2, H * 0.67).createFromHTML(`
             <div style="text-align:center; font-family:Arial,sans-serif">
                 <input type="text" id="nameInput" placeholder="Enter your name" maxlength="20"
                     style="font-size:22px; padding:8px 12px; width:220px; text-align:center;
@@ -29,6 +32,15 @@ export class MainMenu extends Scene
                            box-shadow:0 4px 8px rgba(0,0,0,0.5);">
                     Start Climbing!
                 </button>
+                <br/><br/>
+                <label id="soundLabel"
+                    style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;
+                           font-size:18px; color:#fff; user-select:none;
+                           text-shadow:0 2px 4px rgba(0,0,0,0.8);">
+                    <input type="checkbox" id="muteToggle"
+                        style="width:20px; height:20px; cursor:pointer; accent-color:#e74c3c;" />
+                    No Sound
+                </label>
             </div>
         `);
 
@@ -50,8 +62,10 @@ export class MainMenu extends Scene
     private startGame ()
     {
         const input = document.getElementById('nameInput') as HTMLInputElement;
-        const name = input?.value?.trim() || 'Anonymous';
+        const name  = input?.value?.trim() || 'Anonymous';
+        const mute  = (document.getElementById('muteToggle') as HTMLInputElement)?.checked ?? false;
         this.registry.set('playerName', name);
+        this.registry.set('muted', mute);
         this.domElement.destroy();
         this.scene.start('Game');
     }

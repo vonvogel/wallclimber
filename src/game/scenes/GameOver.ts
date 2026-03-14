@@ -57,26 +57,31 @@ export class GameOver extends Scene
         this.saveScores([...skyScores, ...htScores]);
 
         // ── background ────────────────────────────────────────────────────────
+        const W = this.scale.width;
+        const H = this.scale.height;
+        const cx = W / 2;   // horizontal centre in screen pixels
+
         this.cameras.main.setBackgroundColor(0x1a0a2e);
-        const bg = this.add.image(512, 384, 'background');
+        const bg = this.add.image(cx, H / 2, 'background');
+        bg.setDisplaySize(W, H);
         bg.setAlpha(0.15);
 
         // ── title ─────────────────────────────────────────────────────────────
         if (this.scoreType === 'skylounge') {
-            this.add.text(512, 48, '🍸  SKY LOUNGE!  🍸', {
+            this.add.text(cx, 48, '🍸  SKY LOUNGE!  🍸', {
                 fontFamily: 'Arial Black', fontSize: 52, color: '#ffdd33',
                 stroke: '#000000', strokeThickness: 8, align: 'center'
             }).setOrigin(0.5);
-            this.add.text(512, 118, `${playerName}  —  reached in  ${formatTime(this.score)}`, {
+            this.add.text(cx, 118, `${playerName}  —  reached in  ${formatTime(this.score)}`, {
                 fontFamily: 'Arial Black', fontSize: 24, color: '#ffffff',
                 stroke: '#000000', strokeThickness: 5, align: 'center'
             }).setOrigin(0.5);
         } else {
-            this.add.text(512, 52, 'GAME OVER', {
+            this.add.text(cx, 52, 'GAME OVER', {
                 fontFamily: 'Arial Black', fontSize: 64, color: '#ff4444',
                 stroke: '#000000', strokeThickness: 8, align: 'center'
             }).setOrigin(0.5);
-            this.add.text(512, 130, `${playerName}  —  ${this.score}% height`, {
+            this.add.text(cx, 130, `${playerName}  —  ${this.score}% height`, {
                 fontFamily: 'Arial Black', fontSize: 26, color: '#ffff00',
                 stroke: '#000000', strokeThickness: 6, align: 'center'
             }).setOrigin(0.5);
@@ -87,7 +92,7 @@ export class GameOver extends Scene
         const gfx = this.add.graphics();
 
         if (skyScores.length > 0) {
-            this.add.text(512, nextY, '★  Sky Lounge Club  ★', {
+            this.add.text(cx, nextY, '★  Sky Lounge Club  ★', {
                 fontFamily: 'Arial Black', fontSize: 20, color: '#ffdd33',
                 stroke: '#000000', strokeThickness: 4, align: 'center'
             }).setOrigin(0.5);
@@ -96,7 +101,7 @@ export class GameOver extends Scene
             skyScores.forEach((entry, i) => {
                 const isMe = entry.name === playerName && this.scoreType === 'skylounge' &&
                              entry.time === this.score;
-                this.drawRow(gfx, i, nextY, `#${i+1}`, entry.name,
+                this.drawRow(gfx, cx, i, nextY, `#${i+1}`, entry.name,
                     formatTime(entry.time ?? 0), 0x2d4a1a, 0x3d6a22, isMe);
                 nextY += 32;
             });
@@ -104,7 +109,7 @@ export class GameOver extends Scene
         }
 
         if (htScores.length > 0) {
-            this.add.text(512, nextY, 'Height Records', {
+            this.add.text(cx, nextY, 'Height Records', {
                 fontFamily: 'Arial Black', fontSize: 20, color: '#ffffff',
                 stroke: '#000000', strokeThickness: 4, align: 'center'
             }).setOrigin(0.5);
@@ -113,7 +118,7 @@ export class GameOver extends Scene
             htScores.forEach((entry, i) => {
                 const isMe = entry.name === playerName && this.scoreType === 'height' &&
                              entry.score === this.score;
-                this.drawRow(gfx, i, nextY, `#${i+1}`, entry.name,
+                this.drawRow(gfx, cx, i, nextY, `#${i+1}`, entry.name,
                     `${entry.score ?? 0}%`, 0x1a1a2e, 0x16213e, isMe);
                 nextY += 32;
             });
@@ -121,7 +126,7 @@ export class GameOver extends Scene
         }
 
         // ── click to restart ──────────────────────────────────────────────────
-        this.add.text(512, nextY + 14, 'Click anywhere to play again', {
+        this.add.text(cx, nextY + 14, 'Click anywhere to play again', {
             fontFamily: 'Arial', fontSize: 20, color: '#aaaaaa',
             stroke: '#000000', strokeThickness: 4, align: 'center'
         }).setOrigin(0.5);
@@ -131,12 +136,13 @@ export class GameOver extends Scene
 
     private drawRow (
         gfx: Phaser.GameObjects.Graphics,
+        cx: number,
         index: number, y: number,
         rank: string, name: string, value: string,
         evenColor: number, oddColor: number,
         highlight: boolean
     ) {
-        const panelX = 220;
+        const panelX = cx - 292;
         const panelW = 584;
         const rowH   = 30;
         const bg     = highlight ? 0x2a5a1a : (index % 2 === 0 ? evenColor : oddColor);

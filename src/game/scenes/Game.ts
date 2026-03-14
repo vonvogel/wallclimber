@@ -2,7 +2,6 @@ import { Scene } from 'phaser';
 
 const WORLD_W   = 1024;
 const WORLD_H   = 2400;
-const PEG_R     = 9;
 const GRAB_R    = 24;
 const GRAVITY   = 900;
 const DAMPING   = 0.992;
@@ -18,6 +17,10 @@ const HEAD_LEN  = 16;   // neck to head-centre distance
 const HEAD_K    = 150;  // spring stiffness (rad/s²) — must exceed GRAVITY/HEAD_LEN ≈ 56
 const HEAD_DAMP = 0.97; // angular damping per step
 
+// ── Grip slip mechanic ────────────────────────────────────────────────────────
+const GRIP_DURATION = 5;     // seconds until auto-release
+const GRIP_SLIDE    = 28;    // px the body drifts down (≈ head diameter)
+
 // ── Sky Lounge platform ───────────────────────────────────────────────────────
 const PLAT_Y    = 200;  // platform top surface Y (~2 monkey-heights from ceiling)
 const PLAT_X1   = 30;   // left fifth of the 1024-wide wall
@@ -27,7 +30,7 @@ const PLAT_H    = 22;
 type GameState = 'hanging' | 'flying';
 type GrabLimb  = 'leftHand' | 'rightHand';
 
-interface Peg { x: number; y: number; }
+interface Peg { x: number; y: number; dir: number; }
 
 interface Parakeet {
     x: number; y: number;
@@ -77,8 +80,11 @@ export class Game extends Scene
     private headAngle: number = 0;
     private headVel:   number = 0;
 
-    private gripDamp:  number  = 0.992;
-    private startTime: number  = 0;
+    private gripDamp:       number  = 0.992;
+    private gripSlideTimer: number  = 0;   // seconds on current peg
+    private gripSlide:      number  = 0;   // current downward slip offset (px)
+    private hasJumped:      boolean = false; // slip mechanic inactive on first grip
+    private startTime:      number  = 0;
 
     private parakeets:      Parakeet[] = [];
     private parakeetTimer:  number     = 0;   // ms since last spawn
@@ -88,10 +94,14 @@ export class Game extends Scene
     private celebrateTimer: number = 0;
     private celebrateElapsed: number = 0;
 
-    private spaceKey!: Phaser.Input.Keyboard.Key;
-    private wasSpace:  boolean = false;
+    private spaceKey!:   Phaser.Input.Keyboard.Key;
+    private sKey!:       Phaser.Input.Keyboard.Key;
+    private wasSpace:    boolean = false;
+    private hudSound!:   Phaser.GameObjects.Text;
 
     constructor () { super('Game'); }
+
+    shutdown () { this.scale.off('resize', this.onResize, this); }
 
     // ─── lifecycle ────────────────────────────────────────────────────────────
 
@@ -114,7 +124,10 @@ export class Game extends Scene
         this.legL      = [0, 0, 0, 0];
         this.legR      = [0, 0, 0, 0];
         this.bestPct   = 0;
-        this.gripDamp  = DAMPING;
+        this.gripDamp        = DAMPING;
+        this.gripSlideTimer  = 0;
+        this.gripSlide       = 0;
+        this.hasJumped       = false;
         this.headAngle       = 0;
         this.headVel         = 0;
         this.startTime       = Date.now();
@@ -140,8 +153,9 @@ export class Game extends Scene
 
         this.gfx = this.add.graphics();
         this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
+        this.cameras.main.setZoom(this.scale.width / WORLD_W);
 
-        this.hudLeft = this.add.text(WORLD_W / 2, 768 - 14, 'HOLD SPACE to spin arm  •  RELEASE to jump', {
+        this.hudLeft = this.add.text(WORLD_W / 2, 0, 'HOLD SPACE to spin arm  •  RELEASE to jump', {
             fontFamily: 'Arial', fontSize: 16, color: '#ffffff',
             stroke: '#000000', strokeThickness: 4
         }).setScrollFactor(0).setDepth(10).setOrigin(0.5, 1);
@@ -167,6 +181,20 @@ export class Game extends Scene
 
         this.cameras.main.centerOn(this.bx, this.by);
         this.spaceKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+        this.sKey     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S);
+
+        this.repositionHUD();
+        this.scale.on('resize', this.onResize, this);
+
+        // apply mute preference from main menu
+        const muted = this.registry.get('muted') ?? false;
+        this.sound.mute = muted;
+
+        this.hudSound = this.add.text(12, 12, '', {
+            fontFamily: 'Arial Black', fontSize: 16, color: '#ffffff',
+            stroke: '#000000', strokeThickness: 4,
+        }).setScrollFactor(0).setDepth(10).setOrigin(0, 0);
+        this.updateSoundHud();
     }
 
     update (_time: number, delta: number)
@@ -174,7 +202,13 @@ export class Game extends Scene
         const dt    = Math.min(delta / 1000, 0.05);
         const space = this.spaceKey.isDown;
 
-        this.updateParakeets(delta);
+        if (Phaser.Input.Keyboard.JustDown(this.sKey)) {
+            this.sound.mute = !this.sound.mute;
+            this.registry.set('muted', this.sound.mute);
+            this.updateSoundHud();
+        }
+
+        if (this.hasJumped) this.updateParakeets(delta);
 
         if (this.celebrating) {
             this.celebrateTimer += delta;
@@ -205,6 +239,23 @@ export class Game extends Scene
 
     private tickHanging (dt: number, space: boolean)
     {
+        // ── grip slip: slowly slide down, then auto-release (not on first grip) ──
+        if (this.hasJumped) {
+            this.gripSlideTimer += dt;
+            const t = Math.min(1, this.gripSlideTimer / GRIP_DURATION);
+            this.gripSlide = t * GRIP_SLIDE;
+            if (this.gripSlideTimer >= GRIP_DURATION) {
+                const tangLen  = this.pendVel * this.pendLen;
+                this.vx        =  Math.cos(this.pendAngle) * tangLen;
+                this.vy        = -Math.sin(this.pendAngle) * tangLen;
+                this.lastPeg   = this.grabPeg;
+                this.spinAngle = Math.PI / 2;
+                this.leftAngle = Math.PI / 2;
+                this.state     = 'flying';
+                return;
+            }
+        }
+
         const θ = this.pendAngle, ω = this.pendVel, L = this.pendLen;
         const pendAcc = -(GRAVITY / L) * Math.sin(θ);
         this.pendVel += pendAcc * dt;
@@ -320,8 +371,29 @@ export class Game extends Scene
         this.headAngle += this.headVel * dt;
     }
 
+    private onResize (gameSize: Phaser.Structs.Size)
+    {
+        const zoom = gameSize.width / WORLD_W;
+        this.cameras.main.setZoom(zoom);
+        this.repositionHUD();
+    }
+
+    private repositionHUD ()
+    {
+        const zoom = this.cameras.main.zoom;
+        // bottom HUD: place 14px from the bottom of the actual viewport
+        this.hudLeft.setPosition(WORLD_W / 2, (this.scale.height - 14) / zoom);
+    }
+
+    private updateSoundHud ()
+    {
+        this.hudSound.setText(this.sound.mute ? '[S] Sound: OFF' : '[S] Sound: ON');
+        this.hudSound.setColor(this.sound.mute ? '#ff6666' : '#aaffaa');
+    }
+
     private safePlay (key: string)
     {
+        if (this.sound.mute) return;
         if (this.cache.audio.exists(key)) this.sound.play(key);
     }
 
@@ -340,6 +412,7 @@ export class Game extends Scene
         this.vx = Math.cos(this.spinAngle) * speed + tvx;
         this.vy = Math.sin(this.spinAngle) * speed + tvy;
         this.lastPeg   = this.grabPeg;
+        this.hasJumped = true;
         // seed both arm angles from current spin position
         this.leftAngle = this.spinAngle;
         this.state     = 'flying';
@@ -379,10 +452,12 @@ export class Game extends Scene
         const tvy    = -Math.sin(this.pendAngle);
         this.pendVel = (this.vx * tvx + this.vy * tvy) / this.pendLen;
 
-        this.gripDamp  = 0.82;           // strong initial damping on grab
-        this.spinAngle = Math.PI / 2;   // free hand hangs straight down
-        this.leftAngle = Math.PI / 2;
-        this.state     = 'hanging';
+        this.gripDamp       = 0.82;           // strong initial damping on grab
+        this.gripSlideTimer = 0;
+        this.gripSlide      = 0;
+        this.spinAngle      = Math.PI / 2;   // free hand hangs straight down
+        this.leftAngle      = Math.PI / 2;
+        this.state          = 'hanging';
         this.rndPlay('oof1', 'oof2');
     }
 
@@ -391,7 +466,7 @@ export class Game extends Scene
     private updateBody ()
     {
         this.bx = this.grabPeg.x + Math.sin(this.pendAngle) * this.pendLen;
-        this.by = this.grabPeg.y + Math.cos(this.pendAngle) * this.pendLen;
+        this.by = this.grabPeg.y + this.gripSlide + Math.cos(this.pendAngle) * this.pendLen;
     }
 
     private flyingHandTips (): {x: number; y: number}[]
@@ -498,7 +573,7 @@ export class Game extends Scene
         // arms
         if (this.state === 'hanging') {
             const grabSX = bx + (this.grabLimb === 'rightHand' ?  11 : -11);
-            if (this.segDistSq(px, py, grabSX, sY, this.grabPeg.x, this.grabPeg.y) < 10*10) return true;
+            if (this.segDistSq(px, py, grabSX, sY, this.grabPeg.x, this.grabPeg.y + this.gripSlide) < 10*10) return true;
             const freeSX = bx + (this.grabLimb === 'rightHand' ? -11 :  11);
             const fHX    = freeSX + Math.cos(this.spinAngle) * (ARM_U + ARM_L);
             const fHY    = sY     + Math.sin(this.spinAngle) * (ARM_U + ARM_L);
@@ -671,7 +746,9 @@ export class Game extends Scene
                 // clear pegs near the top only within the lounge + 2 lounge-widths to the right
                 const platW = PLAT_X2 - PLAT_X1;
                 if (py < PLAT_Y + PLAT_H + 30 && px <= PLAT_X2 + 2 * platW) continue;
-                this.pegs.push({ x: px, y: py });
+                const side = Math.random() < 0.5 ? 0 : Math.PI;
+                const dir  = side + (Math.random() - 0.5) * 0.7; // ±~20° tilt from horizontal
+                this.pegs.push({ x: px, y: py, dir });
             }
         }
         this.pegs.sort((a, b) => b.y - a.y);
@@ -683,7 +760,7 @@ export class Game extends Scene
     {
         this.gfx.clear();
         this.drawBar();
-        this.drawPegs();
+        this.drawLeaves();
         this.drawParakeets();
         this.drawKabouter();
     }
@@ -795,20 +872,125 @@ export class Game extends Scene
         g.strokeCircle(cx + bW - 5, rimY - 10, 4);
     }
 
-    private drawPegs ()
+    private drawLeaves ()
     {
         const g    = this.gfx;
         const camY = this.cameras.main.scrollY;
         const camH = this.cameras.main.height;
         for (const p of this.pegs) {
-            if (p.y < camY - 30 || p.y > camY + camH + 30) continue;
-            g.fillStyle(0xffffff);
-            g.lineStyle(2.5, 0x111111);
-            g.fillCircle(p.x, p.y, PEG_R);
-            g.strokeCircle(p.x, p.y, PEG_R);
-            g.lineStyle(1.5, 0x333333);
-            g.beginPath(); g.moveTo(p.x - 4, p.y); g.lineTo(p.x + 4, p.y); g.strokePath();
-            g.beginPath(); g.moveTo(p.x, p.y - 4); g.lineTo(p.x, p.y + 4); g.strokePath();
+            if (p.y < camY - 80 || p.y > camY + camH + 80) continue;
+            const isGrab  = this.state === 'hanging' && p === this.grabPeg;
+            const slideY  = isGrab ? this.gripSlide : 0;
+            const t       = isGrab ? Math.min(1, this.gripSlideTimer / GRIP_DURATION) : 0;
+            this.drawLeaf(g, p.x, p.y, p.dir, slideY, t);
+        }
+    }
+
+    /** Draw one shamrock. `slideY` pulls the head down; `t` 0→1 shows wilting/tearing. */
+    private drawLeaf (
+        g: Phaser.GameObjects.Graphics,
+        px: number, py: number,
+        dir: number,
+        slideY: number, t: number
+    ) {
+        const STEM_LEN  = 26;   // stem from wall to shamrock centre
+        const LOBE_R    = 8.5;  // radius of each heart lobe
+        const LOBE_DIST = 6.5;  // distance from centre to each lobe centre
+
+        // Wall-attachment nub
+        const nubX = px - Math.cos(dir) * STEM_LEN;
+        const nubY = py - Math.sin(dir) * STEM_LEN;
+
+        // Shamrock centre (grab point, pulled down by slide)
+        const cx = px;
+        const cy = py + slideY;
+
+        // Stem direction unit vector (nub → centre)
+        const sdx = cx - nubX;
+        const sdy = cy - nubY;
+        const sLen = Math.sqrt(sdx * sdx + sdy * sdy) || 1;
+        const snx  = sdx / sLen;
+        const sny  = sdy / sLen;
+
+        // Color: vivid shamrock green → yellow → brown as t rises
+        const cr = Math.round(20  + 170 * t);
+        const cg = Math.round(155 -  75 * t);
+        const cb = Math.round(30  -  20 * t);
+        const lobeCol    = (cr << 16) | (cg << 8) | cb;
+        const outlineCol = t > 0.55 ? 0x7a4a00 : 0x1a5c10;
+        const stemCol    = t > 0.55 ? 0x7a4a00 : 0x3a6010;
+
+        // ── wall nub ──
+        g.fillStyle(0x5a3a1a);
+        g.fillCircle(nubX, nubY, 3.5);
+
+        // ── stem ──
+        g.lineStyle(2.5, stemCol);
+        g.beginPath(); g.moveTo(nubX, nubY); g.lineTo(cx, cy); g.strokePath();
+
+        // ── three heart-shaped lobes at 120° intervals ──
+        // Lobes fan out perpendicular to the stem; first lobe points "sideways".
+        const baseAngle = Math.atan2(sny, snx) + Math.PI / 2;
+
+        // Draw all filled circles first so they blend into a trefoil
+        g.fillStyle(lobeCol);
+        for (let i = 0; i < 3; i++) {
+            const a  = baseAngle + i * (2 * Math.PI / 3);
+            const lx = cx + Math.cos(a) * LOBE_DIST;
+            const ly = cy + Math.sin(a) * LOBE_DIST;
+            g.fillCircle(lx, ly, LOBE_R);
+        }
+
+        // Outlines + midrib veins
+        for (let i = 0; i < 3; i++) {
+            const a  = baseAngle + i * (2 * Math.PI / 3);
+            const lx = cx + Math.cos(a) * LOBE_DIST;
+            const ly = cy + Math.sin(a) * LOBE_DIST;
+
+            g.lineStyle(1.4, outlineCol);
+            g.strokeCircle(lx, ly, LOBE_R);
+
+            // Heart indent: small dark notch at the inner edge of each lobe
+            const notchX = lx - Math.cos(a) * LOBE_R * 0.55;
+            const notchY = ly - Math.sin(a) * LOBE_R * 0.55;
+            g.fillStyle(outlineCol);
+            g.fillCircle(notchX, notchY, 2.2);
+
+            // Midrib from centre to lobe tip
+            g.lineStyle(0.9, outlineCol);
+            g.beginPath();
+            g.moveTo(cx, cy);
+            g.lineTo(lx + Math.cos(a) * LOBE_R * 0.75, ly + Math.sin(a) * LOBE_R * 0.75);
+            g.strokePath();
+        }
+
+        // Centre dot to cover stem tip and tidy the trefoil junction
+        g.fillStyle(lobeCol);
+        g.fillCircle(cx, cy, 4);
+        g.lineStyle(1, outlineCol);
+        g.strokeCircle(cx, cy, 4);
+
+        // ── stem tear marks appear above 65% ──
+        if (t > 0.65) {
+            const crack = (t - 0.65) / 0.35;
+            // perpendicular to stem for the tear width
+            const px2 = -sny * 4 * crack;
+            const py2 =  snx * 4 * crack;
+            const tearX = nubX + sdx * 0.4;
+            const tearY = nubY + sdy * 0.4;
+            g.lineStyle(1.5, 0x8b3a00);
+            g.beginPath();
+            g.moveTo(tearX - px2, tearY - py2);
+            g.lineTo(tearX + px2, tearY + py2);
+            g.strokePath();
+            if (crack > 0.45) {
+                const t2X = nubX + sdx * 0.65;
+                const t2Y = nubY + sdy * 0.65;
+                g.beginPath();
+                g.moveTo(t2X - px2 * 0.6, t2Y - py2 * 0.6);
+                g.lineTo(t2X + px2 * 0.6, t2Y + py2 * 0.6);
+                g.strokePath();
+            }
         }
     }
 
@@ -824,14 +1006,16 @@ export class Game extends Scene
 
         // ── arms with hook-on-stick ──
         if (this.state === 'hanging') {
-            // grabbing arm: stretched toward peg, hook at peg
-            const grabSX = bx + (grabLimb === 'rightHand' ? 11 : -11);
-            const gDir   = Math.atan2(grabPeg.y - sY, grabPeg.x - grabSX);
-            const gEX    = grabSX + Math.cos(gDir) * ARM_U;
-            const gEY    = sY     + Math.sin(gDir) * ARM_U;
+            // grabbing arm: hook on the stretched leaf tip
+            const grabSX   = bx + (grabLimb === 'rightHand' ? 11 : -11);
+            const gripTipX = grabPeg.x;
+            const gripTipY = grabPeg.y + this.gripSlide;
+            const gDir     = Math.atan2(gripTipY - sY, gripTipX - grabSX);
+            const gEX      = grabSX + Math.cos(gDir) * ARM_U;
+            const gEY      = sY     + Math.sin(gDir) * ARM_U;
             g.lineStyle(3.5, 0x111111);
-            g.beginPath(); g.moveTo(grabSX, sY); g.lineTo(gEX, gEY); g.lineTo(grabPeg.x, grabPeg.y); g.strokePath();
-            this.drawHook(grabPeg.x, grabPeg.y, gDir);
+            g.beginPath(); g.moveTo(grabSX, sY); g.lineTo(gEX, gEY); g.lineTo(gripTipX, gripTipY); g.strokePath();
+            this.drawHook(gripTipX, gripTipY, gDir);
 
             // free arm: spins with hook dangling at tip
             const freeSX = bx + (grabLimb === 'rightHand' ? -11 : 11);
