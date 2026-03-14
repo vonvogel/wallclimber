@@ -99,6 +99,17 @@ export class Game extends Scene
     private wasSpace:    boolean = false;
     private hudSound!:   Phaser.GameObjects.Text;
 
+    // ── Mobile touch UI ───────────────────────────────────────────────────────
+    private isTouchDevice:    boolean = false;
+    private touchSpaceDown:   boolean = false;
+    private soundTapped:      boolean = false;
+    private touchBtn!:        Phaser.GameObjects.Rectangle;
+    private touchBtnLabel!:   Phaser.GameObjects.Text;
+    private soundTouchBtn!:   Phaser.GameObjects.Rectangle;
+    private soundTouchLabel!: Phaser.GameObjects.Text;
+    private jumpBtnScreen  = { x1: 0, y1: 0, x2: 0, y2: 0 };
+    private soundBtnScreen = { x1: 0, y1: 0, x2: 0, y2: 0 };
+
     constructor () { super('Game'); }
 
     shutdown () { this.scale.off('resize', this.onResize, this); }
@@ -190,22 +201,32 @@ export class Game extends Scene
         const muted = this.registry.get('muted') ?? false;
         this.sound.mute = muted;
 
-        this.hudSound = this.add.text(12, 12, '', {
+        this.hudSound = this.add.text(12, this.scale.height - 12, '', {
             fontFamily: 'Arial Black', fontSize: 16, color: '#ffffff',
             stroke: '#000000', strokeThickness: 4,
-        }).setScrollFactor(0).setDepth(10).setOrigin(0, 0);
+        }).setScrollFactor(0).setDepth(10).setOrigin(0, 1);
         this.updateSoundHud();
+
+        this.isTouchDevice = this.sys.game.device.input.touch;
+        if (this.isTouchDevice) {
+            this.input.addPointer(2);   // support 3 simultaneous touches
+            this.createTouchUI();
+        }
     }
 
     update (_time: number, delta: number)
     {
         const dt    = Math.min(delta / 1000, 0.05);
-        const space = this.spaceKey.isDown;
+
+        if (this.isTouchDevice) this.checkTouchInput();
+
+        const space = this.spaceKey.isDown || this.touchSpaceDown;
 
         if (Phaser.Input.Keyboard.JustDown(this.sKey)) {
             this.sound.mute = !this.sound.mute;
             this.registry.set('muted', this.sound.mute);
             this.updateSoundHud();
+            this.updateSoundTouchBtn();
         }
 
         if (this.hasJumped) this.updateParakeets(delta);
@@ -376,6 +397,7 @@ export class Game extends Scene
         const zoom = gameSize.width / WORLD_W;
         this.cameras.main.setZoom(zoom);
         this.repositionHUD();
+        if (this.isTouchDevice) this.repositionTouchUI();
     }
 
     private repositionHUD ()
@@ -383,6 +405,118 @@ export class Game extends Scene
         const zoom = this.cameras.main.zoom;
         // bottom HUD: place 14px from the bottom of the actual viewport
         this.hudLeft.setPosition(WORLD_W / 2, (this.scale.height - 14) / zoom);
+    }
+
+    // ── Touch UI ──────────────────────────────────────────────────────────────
+
+    private createTouchUI ()
+    {
+        // Large jump button
+        this.touchBtn = this.add.rectangle(0, 0, 10, 10, 0xffffff, 0.12)
+            .setScrollFactor(0).setDepth(20).setOrigin(0, 0);
+
+        this.touchBtnLabel = this.add.text(0, 0, 'HOLD', {
+            fontFamily: 'Arial Black', fontSize: 28, color: '#ffffff',
+            stroke: '#000000', strokeThickness: 5, alpha: 0.75,
+        }).setScrollFactor(0).setDepth(21).setOrigin(0.5, 0.5);
+
+        // Small sound toggle button
+        this.soundTouchBtn = this.add.rectangle(0, 0, 10, 10, 0x335533, 0.75)
+            .setScrollFactor(0).setDepth(20).setOrigin(1, 1);
+
+        this.soundTouchLabel = this.add.text(0, 0, '', {
+            fontFamily: 'Arial Black', fontSize: 13, color: '#ffffff',
+            stroke: '#000000', strokeThickness: 3, align: 'center',
+        }).setScrollFactor(0).setDepth(21).setOrigin(0.5, 0.5);
+
+        // Hide keyboard-only hints
+        this.hudLeft.setVisible(false);
+        this.hudSound.setVisible(false);
+
+        this.repositionTouchUI();
+        this.updateSoundTouchBtn();
+    }
+
+    private repositionTouchUI ()
+    {
+        const sw   = this.scale.width;
+        const sh   = this.scale.height;
+        const zoom = this.cameras.main.zoom;
+        const isLandscape = sw >= sh;
+        const SND  = 90;   // sound button size in screen pixels
+
+        // Jump button: bottom strip of screen
+        const jumpH = isLandscape ? Math.round(sh * 0.42) : Math.round(sh * 0.30);
+        const jumpY = sh - jumpH;
+
+        this.jumpBtnScreen  = { x1: 0,        y1: jumpY,      x2: sw,  y2: sh };
+        this.soundBtnScreen = { x1: sw - SND,  y1: sh - SND,  x2: sw,  y2: sh };
+
+        // Convert screen px → game coords (scrollFactor 0, origin 0,0)
+        this.touchBtn.setPosition(0, jumpY / zoom);
+        this.touchBtn.setSize(sw / zoom, jumpH / zoom);
+
+        const midY = (jumpY + jumpH / 2) / zoom;
+        this.touchBtnLabel.setPosition(sw / 2 / zoom, midY);
+        this.touchBtnLabel.setFontSize(Math.max(18, Math.round(jumpH * 0.22)));
+
+        // Sound button: origin (1,1) → position at bottom-right corner
+        this.soundTouchBtn.setPosition(sw / zoom, sh / zoom);
+        this.soundTouchBtn.setSize(SND / zoom, SND / zoom);
+
+        this.soundTouchLabel.setPosition((sw - SND / 2) / zoom, (sh - SND / 2) / zoom);
+        this.soundTouchLabel.setFontSize(Math.max(11, Math.round(SND * 0.16)));
+    }
+
+    private checkTouchInput ()
+    {
+        const ptrs = this.input.manager.pointers;
+        let jumpHeld  = false;
+        let soundDown = false;
+
+        for (const ptr of ptrs) {
+            if (!ptr.isDown) continue;
+            const px = ptr.x, py = ptr.y;
+
+            // Sound button check (priority over jump zone)
+            const s = this.soundBtnScreen;
+            if (px >= s.x1 && px <= s.x2 && py >= s.y1 && py <= s.y2) {
+                soundDown = true;
+                continue;
+            }
+
+            // Jump button check
+            const j = this.jumpBtnScreen;
+            if (px >= j.x1 && px <= j.x2 && py >= j.y1 && py <= j.y2) {
+                jumpHeld = true;
+            }
+        }
+
+        // Update jump button visual on state change
+        if (jumpHeld !== this.touchSpaceDown) {
+            this.touchBtn.setFillStyle(0xffffff, jumpHeld ? 0.30 : 0.12);
+        }
+        this.touchSpaceDown = jumpHeld;
+
+        // Sound toggle fires once per press (not on hold)
+        if (soundDown && !this.soundTapped) {
+            this.soundTapped = true;
+            this.sound.mute  = !this.sound.mute;
+            this.registry.set('muted', this.sound.mute);
+            this.updateSoundHud();
+            this.updateSoundTouchBtn();
+        } else if (!soundDown) {
+            this.soundTapped = false;
+        }
+    }
+
+    private updateSoundTouchBtn ()
+    {
+        if (!this.isTouchDevice) return;
+        const on = !this.sound.mute;
+        this.soundTouchBtn.setFillStyle(on ? 0x225522 : 0x552222, 0.75);
+        this.soundTouchLabel.setText(on ? 'SND\nON' : 'SND\nOFF');
+        this.soundTouchLabel.setColor(on ? '#aaffaa' : '#ff9999');
     }
 
     private updateSoundHud ()
@@ -735,6 +869,8 @@ export class Game extends Scene
         const spacingX = (WORLD_W - marginX * 2) / (cols - 1);
         const spacingY = (botY - topY) / (rows - 1);
 
+        const platW = PLAT_X2 - PLAT_X1;
+
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 if (r > 0 && Math.random() < 0.12) continue;
@@ -743,14 +879,18 @@ export class Game extends Scene
                 const y = topY + r * spacingY + (Math.random() - 0.5) * 28;
                 const px = Math.max(30, Math.min(WORLD_W - 30, x));
                 const py = Math.max(30, Math.min(WORLD_H - 30, y));
-                // clear pegs near the top only within the lounge + 2 lounge-widths to the right
-                const platW = PLAT_X2 - PLAT_X1;
-                if (py < PLAT_Y + PLAT_H + 30 && px <= PLAT_X2 + 2 * platW) continue;
+                // only exclude pegs inside the physical bar/platform footprint
+                if (px >= PLAT_X1 - 5 && px <= PLAT_X2 + 5 &&
+                    py >= PLAT_Y - 65   && py <= PLAT_Y + PLAT_H + 5) continue;
                 const side = Math.random() < 0.5 ? 0 : Math.PI;
                 const dir  = side + (Math.random() - 0.5) * 0.7; // ±~20° tilt from horizontal
                 this.pegs.push({ x: px, y: py, dir });
             }
         }
+
+        // Dedicated peg half a platform-width to the right of the Sky Lounge
+        this.pegs.push({ x: PLAT_X2 + platW / 2, y: PLAT_Y, dir: 0 });
+
         this.pegs.sort((a, b) => b.y - a.y);
     }
 

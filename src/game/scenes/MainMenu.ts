@@ -6,10 +6,9 @@ export class MainMenu extends Scene
     titleImage: GameObjects.Image;
     private domElement!: Phaser.GameObjects.DOMElement;
 
-    constructor ()
-    {
-        super('MainMenu');
-    }
+    constructor () { super('MainMenu'); }
+
+    shutdown () { this.scale.off('resize', undefined, this); }
 
     create ()
     {
@@ -18,6 +17,13 @@ export class MainMenu extends Scene
 
         this.background = this.add.image(W / 2, H / 2, 'background').setDisplaySize(W, H).setTint(0x888888);
         this.titleImage = this.add.image(W / 2, H * 0.25, 'titletext').setDisplaySize(W * 0.6, H * 0.38);
+
+        this.scale.on('resize', (size: Phaser.Structs.Size) => {
+            const nW = size.width, nH = size.height;
+            this.background.setPosition(nW / 2, nH / 2).setDisplaySize(nW, nH);
+            this.titleImage.setPosition(nW / 2, nH * 0.25).setDisplaySize(nW * 0.6, nH * 0.38);
+            this.domElement.setPosition(nW / 2, nH * 0.67);
+        }, this);
 
         this.domElement = this.add.dom(W / 2, H * 0.67).createFromHTML(`
             <div style="text-align:center; font-family:Arial,sans-serif">

@@ -19,13 +19,17 @@ function formatTime (t: number): string {
 
 export class GameOver extends Scene
 {
-    private scoreType: 'height' | 'skylounge' = 'height';
-    private score:     number = 0;   // percent OR seconds depending on type
+    private scoreType:  'height' | 'skylounge' = 'height';
+    private score:      number = 0;
+    private _initData:  { score?: number; type?: string; time?: number } = {};
 
     constructor () { super('GameOver'); }
 
+    shutdown () { this.scale.off('resize', undefined, this); }
+
     init (data: { score?: number; type?: string; time?: number })
     {
+        this._initData = data ?? {};
         if (data?.type === 'skylounge') {
             this.scoreType = 'skylounge';
             this.score     = data.time ?? 0;
@@ -132,6 +136,8 @@ export class GameOver extends Scene
         }).setOrigin(0.5);
 
         this.input.once('pointerdown', () => { this.scene.start('MainMenu'); });
+
+        this.scale.on('resize', () => { this.scene.restart(this._initData); }, this);
     }
 
     private drawRow (
